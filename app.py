@@ -123,8 +123,8 @@ if pd.isna(study_start) or pd.isna(study_end):
 study_start = study_start.to_pydatetime()
 study_end = study_end.to_pydatetime()
 
-    ws["G5"] = study_start
-    ws["G6"] = study_end
+ws["G5"] = study_start
+ws["G6"] = study_end
 
     study_months = get_months_between(study_start, study_end)
 
