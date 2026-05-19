@@ -73,8 +73,12 @@ def find_study_timeline_from_all_sheets(budget_file):
     return best["start"], best["end"], best
 
 
-def def find_budget_activity_sheet(budget_file):
-    all_sheets = pd.read_excel(budget_file, sheet_name=None, header=None)
+def find_budget_activity_sheet(budget_file):
+    all_sheets = pd.read_excel(
+        budget_file,
+        sheet_name=None,
+        header=None
+    )
 
     best_sheet = None
     best_score = 0
@@ -89,14 +93,14 @@ def def find_budget_activity_sheet(budget_file):
         "total cost",
         "workload",
         "resources",
-        "budget"
+        "budget",
+        "timeline"
     ]
 
     for sheet_name, df in all_sheets.items():
-
         values = [
             safe_text(x)
-            for x in df.values.flatten().tolist()
+            for x in df.values.flatten()
         ]
 
         text = " ".join(values).lower()
@@ -117,7 +121,15 @@ def def find_budget_activity_sheet(budget_file):
 
 
 def detect_header_row(df):
-    keywords = ["activities", "activity", "units", "unit price", "unit cost", "total price", "total cost"]
+    keywords = [
+        "activities",
+        "activity",
+        "units",
+        "unit price",
+        "unit cost",
+        "total price",
+        "total cost"
+    ]
 
     for idx in range(min(len(df), 50)):
         row_values = [safe_text(x).lower() for x in df.iloc[idx].tolist()]
