@@ -11,10 +11,6 @@ st.title("P95 AI Revenue Module Generator")
 st.caption("PMO Internal Tool • Clinical Study Revenue Automation")
 
 
-# -----------------------------
-# Helper functions
-# -----------------------------
-
 def month_key(dt):
     return datetime(dt.year, dt.month, 1)
 
@@ -34,21 +30,25 @@ def get_months_between(start, end):
     return months
 
 
+def safe_text(value):
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
 def find_study_timeline_from_all_sheets(budget_file):
     all_sheets = pd.read_excel(budget_file, sheet_name=None, header=None)
     date_pairs = []
 
     for sheet_name, df in all_sheets.items():
         for row_idx in range(len(df)):
-            row_values = df.iloc[row_idx].tolist()
-
             dates = []
-            for value in row_values:
+
+            for value in df.iloc[row_idx].tolist():
                 parsed = pd.to_datetime(value, errors="coerce")
 
-                if not pd.isna(parsed):
-                    if 2020 <= parsed.year <= 2035:
-                        dates.append(parsed.to_pydatetime())
+                if not pd.isna(parsed) and 2020 <= parsed.year <= 2035:
+                    dates.append(parsed.to_pydatetime())
 
             if len(dates) >= 2:
                 start = min(dates)
@@ -68,13 +68,15 @@ def find_study_timeline_from_all_sheets(budget_file):
         raise ValueError("Could not detect study timeline from any budget sheet.")
 
     date_pairs = sorted(date_pairs, key=lambda x: x["duration_days"], reverse=True)
-    return date_pairs[0]["start"], date_pairs[0]["end"], date_pairs[0]
+    best = date_pairs[0]
+
+    return best["start"], best["end"], best
 
 
 def find_budget_activity_sheet(budget_file):
     all_sheets = pd.read_excel(budget_file, sheet_name=None, header=None)
 
-    best_sheet_name = None
+    best_sheet = None
     best_score = 0
 
     keywords = [
@@ -82,43 +84,43 @@ def find_budget_activity_sheet(budget_file):
         "activity",
         "units",
         "unit price",
+        "unit cost",
         "total price",
+        "total cost",
         "workload",
         "resources",
         "budget"
     ]
 
     for sheet_name, df in all_sheets.items():
-        text = " ".join(
-            df.astype(str).fillna("").values.flatten().tolist()
-        ).lower()
+        values = df.fillna("").astype(str).values.flatten().tolist()
+        text = " ".join(values).lower()
 
         score = sum(1 for keyword in keywords if keyword in text)
 
         if score > best_score:
             best_score = score
-            best_sheet_name = sheet_name
+            best_sheet = sheet_name
 
-    if not best_sheet_name:
+    if best_sheet is None:
         raise ValueError("Could not detect budget activity sheet.")
 
-    return best_sheet_name
+    return best_sheet
 
 
 def detect_header_row(df):
-    keywords = ["activities", "activity", "units", "unit price", "total price"]
+    keywords = ["activities", "activity", "units", "unit price", "unit cost", "total price", "total cost"]
 
-    for idx in range(min(len(df), 30)):
-        row_text = " ".join(
-            [str(x).lower() for x in df.iloc[idx].tolist() if pd.notna(x)]
-        )
+    for idx in range(min(len(df), 50)):
+        row_values = [safe_text(x).lower() for x in df.iloc[idx].tolist()]
+        row_text = " ".join(row_values)
 
         matches = sum(1 for keyword in keywords if keyword in row_text)
 
         if matches >= 2:
             return idx
 
-    return 1
+    return 0
 
 
 def extract_budget_activities(budget_file):
@@ -131,7 +133,11 @@ def extract_budget_activities(budget_file):
     )
 
     header_row = detect_header_row(df)
-    headers = df.iloc[header_row].astype(str).str.lower().tolist()
+
+    headers = [
+        safe_text(x).lower()
+        for x in df.iloc[header_row].tolist()
+    ]
 
     def find_col(possible_names, fallback=None):
         for name in possible_names:
@@ -143,7 +149,7 @@ def extract_budget_activities(budget_file):
     activity_col = find_col(["activities", "activity"], 0)
     description_col = find_col(["description", "unit description"], 2)
     units_col = find_col(["units", "# of units"], 3)
-    unit_price_col = find_col(["unit price", "unit cost", "cost"], 4)
+    unit_price_col = find_col(["unit price", "unit cost"], 4)
     total_price_col = find_col(["total price", "total cost"], 5)
 
     activities = []
@@ -152,15 +158,17 @@ def extract_budget_activities(budget_file):
         row = df.iloc[idx]
 
         activity = row[activity_col] if activity_col is not None else None
-        description = row[description_col] if description_col is not None else None
+        description = row[description_col] if description_col is not None else ""
         units = row[units_col] if units_col is not None else None
         unit_price = row[unit_price_col] if unit_price_col is not None else None
         total_price = row[total_price_col] if total_price_col is not None else None
 
-        if pd.isna(activity):
+        activity_text = safe_text(activity)
+        description_text = safe_text(description)
+
+        if not activity_text:
             continue
 
-        activity_text = str(activity).strip()
         lower_text = activity_text.lower()
 
         skip_terms = [
@@ -171,29 +179,30 @@ def extract_budget_activities(budget_file):
             "project budget",
             "assumptions",
             "timelines",
-            "meetings"
+            "timeline",
+            "meetings",
+            "rates",
+            "resource",
+            "inflation"
         ]
 
         if any(term in lower_text for term in skip_terms):
             continue
 
-        if pd.isna(units) or pd.isna(unit_price):
+        units_numeric = pd.to_numeric(units, errors="coerce")
+        unit_price_numeric = pd.to_numeric(unit_price, errors="coerce")
+
+        if pd.isna(units_numeric) or pd.isna(unit_price_numeric):
             continue
 
-        try:
-            units = float(units)
-            unit_price = float(unit_price)
-        except Exception:
-            continue
-
-        if units == 0 or unit_price == 0:
+        if float(units_numeric) == 0 or float(unit_price_numeric) == 0:
             continue
 
         activities.append({
             "activity": activity_text,
-            "description": "" if pd.isna(description) else str(description),
-            "units": units,
-            "unit_price": unit_price,
+            "description": description_text,
+            "units": float(units_numeric),
+            "unit_price": float(unit_price_numeric),
             "total_price": total_price,
             "source_sheet": sheet_name,
             "source_row": idx + 1
@@ -206,7 +215,7 @@ def extract_budget_activities(budget_file):
 
 
 def get_phase_dates(start, end):
-    total_days = (end - start).days
+    total_days = max((end - start).days, 1)
 
     startup_end = start + timedelta(days=int(total_days * 0.25))
     execution_end = start + timedelta(days=int(total_days * 0.75))
@@ -228,6 +237,8 @@ def assign_phase(activity, description):
         "protocol",
         "sample size",
         "kom",
+        "kick off",
+        "kick-off",
         "development",
         "submission",
         "approval",
@@ -248,7 +259,8 @@ def assign_phase(activity, description):
         "internal",
         "data collection",
         "monitoring",
-        "management"
+        "management",
+        "operational"
     ]):
         return "execution"
 
@@ -265,6 +277,7 @@ def assign_phase(activity, description):
         "close-out",
         "closeout",
         "archive",
+        "archiving",
         "transfer",
         "final"
     ]):
@@ -282,9 +295,8 @@ def spread_units(activity, description, total_units, start, end):
 
     spread = defaultdict(float)
     total_units = float(total_units)
-    description_text = str(description).lower()
-    activity_text = str(activity).lower()
-    combined_text = f"{activity_text} {description_text}"
+
+    combined_text = f"{activity} {description}".lower()
 
     if len(phase_months) == 0:
         spread[month_key(start)] = total_units
@@ -329,7 +341,6 @@ def spread_units(activity, description, total_units, start, end):
 
 def generate_revenue_tracker(budget_file, template_file):
     activities, activity_sheet, header_row = extract_budget_activities(budget_file)
-
     study_start, study_end, timeline_source = find_study_timeline_from_all_sheets(budget_file)
 
     wb = load_workbook(
@@ -549,10 +560,6 @@ def generate_revenue_tracker(budget_file, template_file):
     return output, summary
 
 
-# -----------------------------
-# UI
-# -----------------------------
-
 st.sidebar.header("Study Parameters")
 st.sidebar.info("Study dates are automatically detected from all budget sheets.")
 
@@ -577,7 +584,10 @@ if st.button("Generate Revenue Module"):
 
             st.subheader("Detected Sources")
             st.write(f"Activity data detected from sheet: **{summary['activity_sheet']}**")
-            st.write(f"Timeline detected from sheet: **{summary['timeline_source']['sheet']}**, row **{summary['timeline_source']['row']}**")
+            st.write(
+                f"Timeline detected from sheet: **{summary['timeline_source']['sheet']}**, "
+                f"row **{summary['timeline_source']['row']}**"
+            )
             st.write(f"Detected study start: **{summary['study_start'].strftime('%d-%b-%Y')}**")
             st.write(f"Detected study end: **{summary['study_end'].strftime('%d-%b-%Y')}**")
 
