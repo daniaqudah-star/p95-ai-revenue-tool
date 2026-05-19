@@ -10,12 +10,10 @@ st.set_page_config(page_title="P95 AI Revenue Module Generator", layout="wide")
 st.title("P95 AI Revenue Module Generator")
 st.caption("PMO Internal Tool • Clinical Study Revenue Automation")
 
-# -----------------------------
-# Helper functions
-# -----------------------------
 
 def month_key(dt):
     return datetime(dt.year, dt.month, 1)
+
 
 def get_months_between(start, end):
     months = []
@@ -31,6 +29,7 @@ def get_months_between(start, end):
 
     return months
 
+
 def get_phase_dates(start, end):
     total_days = (end - start).days
 
@@ -45,6 +44,7 @@ def get_phase_dates(start, end):
         "closeout": (analysis_end, end),
     }
 
+
 def assign_phase(activity, description):
     text = f"{activity} {description}".lower()
 
@@ -58,6 +58,7 @@ def assign_phase(activity, description):
         return "analysis"
 
     return "execution"
+
 
 def spread_units(activity, description, total_units, start, end):
     phase_dates = get_phase_dates(start, end)
@@ -96,6 +97,7 @@ def spread_units(activity, description, total_units, start, end):
 
     return spread
 
+
 def generate_revenue_tracker(budget_file, template_file):
     budget_df = pd.read_excel(
         budget_file,
@@ -115,21 +117,22 @@ def generate_revenue_tracker(budget_file, template_file):
     ws = wb["UNIT TRACKER"]
 
     study_start = pd.to_datetime(budget_df.iloc[23, 1], errors="coerce")
-study_end = pd.to_datetime(budget_df.iloc[23, 2], errors="coerce")
+    study_end = pd.to_datetime(budget_df.iloc[23, 2], errors="coerce")
 
-if pd.isna(study_start) or pd.isna(study_end):
-    raise ValueError("Could not detect valid study start/end dates from the budget file.")
+    if pd.isna(study_start) or pd.isna(study_end):
+        raise ValueError("Could not detect valid study start/end dates from the budget file.")
 
-study_start = study_start.to_pydatetime()
-study_end = study_end.to_pydatetime()
+    study_start = study_start.to_pydatetime()
+    study_end = study_end.to_pydatetime()
 
-ws["G5"] = study_start
-ws["G6"] = study_end
+    ws["G5"] = study_start
+    ws["G6"] = study_end
 
     study_months = get_months_between(study_start, study_end)
 
     forecast_cols = {}
     start_col = 18  # R
+
     for i, m in enumerate(study_months):
         forecast_cols[month_key(m)] = start_col + (i * 6)
 
@@ -165,6 +168,7 @@ ws["G6"] = study_end
         )
 
         total_forecast_units = 0
+
         for m, forecast_col in forecast_cols.items():
             forecast_units = unit_spread.get(m, 0)
             ws.cell(row=target_row, column=forecast_col).value = forecast_units
@@ -174,7 +178,6 @@ ws["G6"] = study_end
 
         target_row += 1
 
-    # Validation
     validation_warnings = []
     rows_processed = 0
     total_contract_value = 0
@@ -251,7 +254,6 @@ ws["G6"] = study_end
     if total_contract_value > 0:
         actions.append("Verify contract totals against budget assumptions.")
 
-    # AI PMO Review sheet
     if "AI PMO Review" in wb.sheetnames:
         del wb["AI PMO Review"]
 
@@ -276,6 +278,7 @@ ws["G6"] = study_end
     review_ws["B10"] = round(total_forecast_units, 2)
 
     row_num = 12
+
     review_ws[f"A{row_num}"] = "HIGH-RISK ITEMS"
     row_num += 1
     for item in high_risk:
@@ -321,12 +324,9 @@ ws["G6"] = study_end
 
     return output, summary
 
-# -----------------------------
-# UI
-# -----------------------------
 
 st.sidebar.header("Study Parameters")
-st.sidebar.info("Study dates are currently read from the budget assumptions tab.")
+st.sidebar.info("Study dates are read from the budget assumptions section.")
 
 col1, col2 = st.columns(2)
 
@@ -368,6 +368,6 @@ if st.button("Generate Revenue Module"):
         except Exception as e:
             st.error("Something went wrong while generating the tracker.")
             st.exception(e)
-            # Footer
+
 st.divider()
 st.caption("P95 AI Revenue Module Generator • Powered by Dania Alqudah")
