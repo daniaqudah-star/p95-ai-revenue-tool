@@ -93,8 +93,11 @@ def find_budget_activity_sheet(budget_file):
     ]
 
     for sheet_name, df in all_sheets.items():
-        values = df.fillna("").astype(str).values.flatten().tolist()
-        text = " ".join(values).lower()
+values = [
+    safe_text(x)
+    for x in df.values.flatten().tolist()
+]
+text = " ".join(values).lower()
 
         score = sum(1 for keyword in keywords if keyword in text)
 
