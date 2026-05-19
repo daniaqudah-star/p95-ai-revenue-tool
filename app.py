@@ -11,6 +11,10 @@ st.title("P95 AI Revenue Module Generator")
 st.caption("PMO Internal Tool • Clinical Study Revenue Automation")
 
 
+# -----------------------------
+# Helper functions
+# -----------------------------
+
 def month_key(dt):
     return datetime(dt.year, dt.month, 1)
 
@@ -28,6 +32,177 @@ def get_months_between(start, end):
             current = datetime(current.year, current.month + 1, 1)
 
     return months
+
+
+def find_study_timeline_from_all_sheets(budget_file):
+    all_sheets = pd.read_excel(budget_file, sheet_name=None, header=None)
+    date_pairs = []
+
+    for sheet_name, df in all_sheets.items():
+        for row_idx in range(len(df)):
+            row_values = df.iloc[row_idx].tolist()
+
+            dates = []
+            for value in row_values:
+                parsed = pd.to_datetime(value, errors="coerce")
+
+                if not pd.isna(parsed):
+                    if 2020 <= parsed.year <= 2035:
+                        dates.append(parsed.to_pydatetime())
+
+            if len(dates) >= 2:
+                start = min(dates)
+                end = max(dates)
+                duration_days = (end - start).days
+
+                if 14 <= duration_days <= 3000:
+                    date_pairs.append({
+                        "sheet": sheet_name,
+                        "row": row_idx + 1,
+                        "start": start,
+                        "end": end,
+                        "duration_days": duration_days
+                    })
+
+    if not date_pairs:
+        raise ValueError("Could not detect study timeline from any budget sheet.")
+
+    date_pairs = sorted(date_pairs, key=lambda x: x["duration_days"], reverse=True)
+    return date_pairs[0]["start"], date_pairs[0]["end"], date_pairs[0]
+
+
+def find_budget_activity_sheet(budget_file):
+    all_sheets = pd.read_excel(budget_file, sheet_name=None, header=None)
+
+    best_sheet_name = None
+    best_score = 0
+
+    keywords = [
+        "activities",
+        "activity",
+        "units",
+        "unit price",
+        "total price",
+        "workload",
+        "resources",
+        "budget"
+    ]
+
+    for sheet_name, df in all_sheets.items():
+        text = " ".join(
+            df.astype(str).fillna("").values.flatten().tolist()
+        ).lower()
+
+        score = sum(1 for keyword in keywords if keyword in text)
+
+        if score > best_score:
+            best_score = score
+            best_sheet_name = sheet_name
+
+    if not best_sheet_name:
+        raise ValueError("Could not detect budget activity sheet.")
+
+    return best_sheet_name
+
+
+def detect_header_row(df):
+    keywords = ["activities", "activity", "units", "unit price", "total price"]
+
+    for idx in range(min(len(df), 30)):
+        row_text = " ".join(
+            [str(x).lower() for x in df.iloc[idx].tolist() if pd.notna(x)]
+        )
+
+        matches = sum(1 for keyword in keywords if keyword in row_text)
+
+        if matches >= 2:
+            return idx
+
+    return 1
+
+
+def extract_budget_activities(budget_file):
+    sheet_name = find_budget_activity_sheet(budget_file)
+
+    df = pd.read_excel(
+        budget_file,
+        sheet_name=sheet_name,
+        header=None
+    )
+
+    header_row = detect_header_row(df)
+    headers = df.iloc[header_row].astype(str).str.lower().tolist()
+
+    def find_col(possible_names, fallback=None):
+        for name in possible_names:
+            for i, header in enumerate(headers):
+                if name in header:
+                    return i
+        return fallback
+
+    activity_col = find_col(["activities", "activity"], 0)
+    description_col = find_col(["description", "unit description"], 2)
+    units_col = find_col(["units", "# of units"], 3)
+    unit_price_col = find_col(["unit price", "unit cost", "cost"], 4)
+    total_price_col = find_col(["total price", "total cost"], 5)
+
+    activities = []
+
+    for idx in range(header_row + 1, len(df)):
+        row = df.iloc[idx]
+
+        activity = row[activity_col] if activity_col is not None else None
+        description = row[description_col] if description_col is not None else None
+        units = row[units_col] if units_col is not None else None
+        unit_price = row[unit_price_col] if unit_price_col is not None else None
+        total_price = row[total_price_col] if total_price_col is not None else None
+
+        if pd.isna(activity):
+            continue
+
+        activity_text = str(activity).strip()
+        lower_text = activity_text.lower()
+
+        skip_terms = [
+            "insert lines",
+            "sectiontotal",
+            "section total",
+            "budget total",
+            "project budget",
+            "assumptions",
+            "timelines",
+            "meetings"
+        ]
+
+        if any(term in lower_text for term in skip_terms):
+            continue
+
+        if pd.isna(units) or pd.isna(unit_price):
+            continue
+
+        try:
+            units = float(units)
+            unit_price = float(unit_price)
+        except Exception:
+            continue
+
+        if units == 0 or unit_price == 0:
+            continue
+
+        activities.append({
+            "activity": activity_text,
+            "description": "" if pd.isna(description) else str(description),
+            "units": units,
+            "unit_price": unit_price,
+            "total_price": total_price,
+            "source_sheet": sheet_name,
+            "source_row": idx + 1
+        })
+
+    if not activities:
+        raise ValueError("Could not detect usable budget activity rows.")
+
+    return activities, sheet_name, header_row + 1
 
 
 def get_phase_dates(start, end):
@@ -48,14 +223,52 @@ def get_phase_dates(start, end):
 def assign_phase(activity, description):
     text = f"{activity} {description}".lower()
 
-    if any(x in text for x in ["protocol", "sample size", "kom", "development"]):
+    if any(x in text for x in [
+        "contract signature",
+        "protocol",
+        "sample size",
+        "kom",
+        "development",
+        "submission",
+        "approval",
+        "start-up",
+        "startup",
+        "set-up",
+        "setup"
+    ]):
         return "startup"
 
-    if any(x in text for x in ["meeting", "monthly", "tc", "coordination", "internal"]):
+    if any(x in text for x in [
+        "meeting",
+        "monthly",
+        "bi-weekly",
+        "biweekly",
+        "tc",
+        "coordination",
+        "internal",
+        "data collection",
+        "monitoring",
+        "management"
+    ]):
         return "execution"
 
-    if "review" in text:
+    if any(x in text for x in [
+        "review",
+        "analysis",
+        "database lock",
+        "stat",
+        "biostat"
+    ]):
         return "analysis"
+
+    if any(x in text for x in [
+        "close-out",
+        "closeout",
+        "archive",
+        "transfer",
+        "final"
+    ]):
+        return "closeout"
 
     return "execution"
 
@@ -68,26 +281,42 @@ def spread_units(activity, description, total_units, start, end):
     phase_months = get_months_between(phase_start, phase_end)
 
     spread = defaultdict(float)
-
-    if total_units is None or pd.isna(total_units):
-        total_units = 0
-
     total_units = float(total_units)
     description_text = str(description).lower()
+    activity_text = str(activity).lower()
+    combined_text = f"{activity_text} {description_text}"
 
     if len(phase_months) == 0:
         spread[month_key(start)] = total_units
         return spread
 
-    if any(x in description_text for x in ["monthly", "bi-weekly", "biweekly", "meeting", "tc"]):
+    if any(x in combined_text for x in [
+        "monthly",
+        "bi-weekly",
+        "biweekly",
+        "weekly",
+        "meeting",
+        "tc",
+        "coordination",
+        "management"
+    ]):
         per_month = total_units / len(phase_months)
         for m in phase_months:
             spread[month_key(m)] = per_month
 
-    elif any(x in description_text for x in ["document", "process"]):
+    elif any(x in combined_text for x in [
+        "document",
+        "process",
+        "contract signature",
+        "kom"
+    ]):
         spread[month_key(phase_start)] = total_units
 
-    elif "review" in description_text:
+    elif any(x in combined_text for x in [
+        "review",
+        "round",
+        "analysis"
+    ]):
         per_month = total_units / len(phase_months)
         for m in phase_months:
             spread[month_key(m)] = per_month
@@ -99,11 +328,9 @@ def spread_units(activity, description, total_units, start, end):
 
 
 def generate_revenue_tracker(budget_file, template_file):
-    budget_df = pd.read_excel(
-        budget_file,
-        sheet_name="Workload and Resources P1",
-        header=None
-    )
+    activities, activity_sheet, header_row = extract_budget_activities(budget_file)
+
+    study_start, study_end, timeline_source = find_study_timeline_from_all_sheets(budget_file)
 
     wb = load_workbook(
         template_file,
@@ -116,15 +343,6 @@ def generate_revenue_tracker(budget_file, template_file):
 
     ws = wb["UNIT TRACKER"]
 
-    study_start = pd.to_datetime(budget_df.iloc[23, 1], errors="coerce")
-    study_end = pd.to_datetime(budget_df.iloc[23, 2], errors="coerce")
-
-    if pd.isna(study_start) or pd.isna(study_end):
-        raise ValueError("Could not detect valid study start/end dates from the budget file.")
-
-    study_start = study_start.to_pydatetime()
-    study_end = study_end.to_pydatetime()
-
     ws["G5"] = study_start
     ws["G6"] = study_end
 
@@ -136,21 +354,13 @@ def generate_revenue_tracker(budget_file, template_file):
     for i, m in enumerate(study_months):
         forecast_cols[month_key(m)] = start_col + (i * 6)
 
-    budget_rows = budget_df.iloc[8:20]
     target_row = 40
 
-    for _, row in budget_rows.iterrows():
-        activity = row[0]
-        description = row[2]
-        units = row[3]
-        unit_price = row[4]
-
-        if pd.isna(activity):
-            continue
-
-        text = str(activity).lower()
-        if "insert lines" in text or "sectiontotal" in text:
-            continue
+    for item in activities:
+        activity = item["activity"]
+        description = item["description"]
+        units = item["units"]
+        unit_price = item["unit_price"]
 
         ws[f"D{target_row}"] = study_start
         ws[f"E{target_row}"] = study_end
@@ -276,8 +486,18 @@ def generate_revenue_tracker(budget_file, template_file):
     review_ws["B9"] = round(total_contract_value, 2)
     review_ws["A10"] = "Total Forecast Units"
     review_ws["B10"] = round(total_forecast_units, 2)
+    review_ws["A11"] = "Activity Source Sheet"
+    review_ws["B11"] = activity_sheet
+    review_ws["A12"] = "Timeline Source Sheet"
+    review_ws["B12"] = timeline_source["sheet"]
+    review_ws["A13"] = "Timeline Source Row"
+    review_ws["B13"] = timeline_source["row"]
+    review_ws["A14"] = "Detected Study Start"
+    review_ws["B14"] = study_start
+    review_ws["A15"] = "Detected Study End"
+    review_ws["B15"] = study_end
 
-    row_num = 12
+    row_num = 17
 
     review_ws[f"A{row_num}"] = "HIGH-RISK ITEMS"
     row_num += 1
@@ -319,14 +539,22 @@ def generate_revenue_tracker(budget_file, template_file):
         "low_risk": len(low_risk),
         "total_contract_value": round(total_contract_value, 2),
         "total_forecast_units": round(total_forecast_units, 2),
-        "actions": actions
+        "actions": actions,
+        "activity_sheet": activity_sheet,
+        "timeline_source": timeline_source,
+        "study_start": study_start,
+        "study_end": study_end
     }
 
     return output, summary
 
 
+# -----------------------------
+# UI
+# -----------------------------
+
 st.sidebar.header("Study Parameters")
-st.sidebar.info("Study dates are read from the budget assumptions section.")
+st.sidebar.info("Study dates are automatically detected from all budget sheets.")
 
 col1, col2 = st.columns(2)
 
@@ -346,6 +574,12 @@ if st.button("Generate Revenue Module"):
             output, summary = generate_revenue_tracker(budget_file, template_file)
 
             st.success("Revenue module generated successfully.")
+
+            st.subheader("Detected Sources")
+            st.write(f"Activity data detected from sheet: **{summary['activity_sheet']}**")
+            st.write(f"Timeline detected from sheet: **{summary['timeline_source']['sheet']}**, row **{summary['timeline_source']['row']}**")
+            st.write(f"Detected study start: **{summary['study_start'].strftime('%d-%b-%Y')}**")
+            st.write(f"Detected study end: **{summary['study_end'].strftime('%d-%b-%Y')}**")
 
             st.subheader("PMO Review Summary")
             st.write(f"Revenue Confidence: **{summary['confidence']}**")
