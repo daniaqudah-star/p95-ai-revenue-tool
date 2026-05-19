@@ -1,16 +1,3 @@
-Yes — delete everything in `app.py` and paste this full version.
-
-This version uses:
-
-```text
-Budget lines from: Workload and Resources P1
-Row start date from: start time column
-Row end date from: end time column
-Fallback timeline: project-level timeline if row date is missing
-Revenue spread: based on each row’s own timeline + phase/unit logic
-```
-
-```python
 import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
@@ -716,6 +703,3 @@ if st.button("Generate Revenue Module"):
 
 st.divider()
 st.caption("P95 AI Revenue Module Generator • Powered by Dania Alqudah")
-```
-
-Commit and refresh.
