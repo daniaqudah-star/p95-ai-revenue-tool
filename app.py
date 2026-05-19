@@ -1,3 +1,16 @@
+Yes — delete everything in `app.py` and paste this full version.
+
+This version uses:
+
+```text
+Budget lines from: Workload and Resources P1
+Row start date from: start time column
+Row end date from: end time column
+Fallback timeline: project-level timeline if row date is missing
+Revenue spread: based on each row’s own timeline + phase/unit logic
+```
+
+```python
 import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
@@ -15,6 +28,21 @@ def month_key(dt):
     return datetime(dt.year, dt.month, 1)
 
 
+def safe_text(value):
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def to_datetime_or_none(value):
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    if parsed.year < 2020 or parsed.year > 2035:
+        return None
+    return parsed.to_pydatetime()
+
+
 def get_months_between(start, end):
     months = []
     current = datetime(start.year, start.month, 1)
@@ -30,12 +58,6 @@ def get_months_between(start, end):
     return months
 
 
-def safe_text(value):
-    if pd.isna(value):
-        return ""
-    return str(value).strip()
-
-
 def find_study_timeline_from_all_sheets(budget_file):
     all_sheets = pd.read_excel(budget_file, sheet_name=None, header=None)
     date_pairs = []
@@ -45,10 +67,10 @@ def find_study_timeline_from_all_sheets(budget_file):
             dates = []
 
             for value in df.iloc[row_idx].tolist():
-                parsed = pd.to_datetime(value, errors="coerce")
+                parsed = to_datetime_or_none(value)
 
-                if not pd.isna(parsed) and 2020 <= parsed.year <= 2035:
-                    dates.append(parsed.to_pydatetime())
+                if parsed:
+                    dates.append(parsed)
 
             if len(dates) >= 2:
                 start = min(dates)
@@ -65,7 +87,7 @@ def find_study_timeline_from_all_sheets(budget_file):
                     })
 
     if not date_pairs:
-        raise ValueError("Could not detect study timeline from any budget sheet.")
+        raise ValueError("Could not detect project-level timeline from any budget sheet.")
 
     date_pairs = sorted(date_pairs, key=lambda x: x["duration_days"], reverse=True)
     best = date_pairs[0]
@@ -80,10 +102,10 @@ def find_timeline_from_workload_sheet(df):
         dates = []
 
         for value in df.iloc[row_idx].tolist():
-            parsed = pd.to_datetime(value, errors="coerce")
+            parsed = to_datetime_or_none(value)
 
-            if not pd.isna(parsed) and 2020 <= parsed.year <= 2035:
-                dates.append(parsed.to_pydatetime())
+            if parsed:
+                dates.append(parsed)
 
         if len(dates) >= 2:
             start = min(dates)
@@ -111,23 +133,25 @@ def detect_header_row(df):
     keywords = [
         "activities",
         "activity",
+        "unit id",
         "units",
-        "unit price",
+        "# of units",
         "unit cost",
-        "total price",
-        "total cost"
+        "total direct costs",
+        "start time",
+        "end time"
     ]
 
-    for idx in range(min(len(df), 80)):
+    for idx in range(min(len(df), 100)):
         row_values = [safe_text(x).lower() for x in df.iloc[idx].tolist()]
         row_text = " ".join(row_values)
 
         matches = sum(1 for keyword in keywords if keyword in row_text)
 
-        if matches >= 2:
+        if matches >= 3:
             return idx
 
-    return 1
+    return 0
 
 
 def extract_budget_activities(budget_file):
@@ -153,11 +177,13 @@ def extract_budget_activities(budget_file):
                     return i
         return fallback
 
-    activity_col = find_col(["activities", "activity"], 0)
-    description_col = find_col(["description", "unit description"], 2)
-    units_col = find_col(["units", "# of units"], 3)
-    unit_price_col = find_col(["unit price", "unit cost"], 4)
-    total_price_col = find_col(["total price", "total cost"], 5)
+    activity_col = find_col(["activities", "activity"], 1)
+    description_col = find_col(["unit id", "unit description", "description"], 2)
+    units_col = find_col(["# of units", "units"], 4)
+    unit_price_col = find_col(["unit cost", "unit price"], 6)
+    total_price_col = find_col(["total direct costs", "total price", "total cost"], 7)
+    row_start_col = find_col(["start time", "start date"], 8)
+    row_end_col = find_col(["end time", "end date"], 9)
 
     activities = []
 
@@ -169,6 +195,12 @@ def extract_budget_activities(budget_file):
         units = row[units_col] if units_col is not None and units_col < len(row) else None
         unit_price = row[unit_price_col] if unit_price_col is not None and unit_price_col < len(row) else None
         total_price = row[total_price_col] if total_price_col is not None and total_price_col < len(row) else None
+
+        row_start_raw = row[row_start_col] if row_start_col is not None and row_start_col < len(row) else None
+        row_end_raw = row[row_end_col] if row_end_col is not None and row_end_col < len(row) else None
+
+        row_start = to_datetime_or_none(row_start_raw)
+        row_end = to_datetime_or_none(row_end_raw)
 
         activity_text = safe_text(activity)
         description_text = safe_text(description)
@@ -189,10 +221,12 @@ def extract_budget_activities(budget_file):
             "meetings",
             "rates",
             "resource",
-            "inflation"
+            "inflation",
+            "total",
+            "name"
         ]
 
-        if any(term in lower_text for term in skip_terms):
+        if any(term == lower_text or lower_text.startswith(term) for term in skip_terms):
             continue
 
         units_numeric = pd.to_numeric(units, errors="coerce")
@@ -217,6 +251,8 @@ def extract_budget_activities(budget_file):
             "units": float(units_numeric),
             "unit_price": float(unit_price_numeric),
             "total_price": total_numeric,
+            "row_start": row_start,
+            "row_end": row_end,
             "source_sheet": sheet_name,
             "source_row": idx + 1
         })
@@ -254,6 +290,7 @@ def assign_phase(activity, description):
         "kom",
         "kick off",
         "kick-off",
+        "training",
         "development",
         "submission",
         "approval",
@@ -277,7 +314,9 @@ def assign_phase(activity, description):
         "management",
         "operational",
         "site",
-        "country"
+        "country",
+        "ctms",
+        "tmf"
     ]):
         return "execution"
 
@@ -286,13 +325,15 @@ def assign_phase(activity, description):
         "analysis",
         "database lock",
         "stat",
-        "biostat"
+        "biostat",
+        "data review"
     ]):
         return "analysis"
 
     if any(x in text for x in [
         "close-out",
         "closeout",
+        "closure",
         "archive",
         "archiving",
         "transfer",
@@ -308,6 +349,9 @@ def spread_units(activity, description, total_units, start, end):
     phase = assign_phase(activity, description)
 
     phase_start, phase_end = phase_dates[phase]
+
+    # If the row already has its own specific timeline,
+    # we spread within that row timeline but still use activity type.
     phase_months = get_months_between(phase_start, phase_end)
 
     spread = defaultdict(float)
@@ -321,13 +365,16 @@ def spread_units(activity, description, total_units, start, end):
 
     if any(x in combined_text for x in [
         "monthly",
+        "months",
         "bi-weekly",
         "biweekly",
         "weekly",
         "meeting",
+        "meetings",
         "tc",
         "coordination",
-        "management"
+        "management",
+        "updates"
     ]):
         per_month = total_units / len(phase_months)
         for m in phase_months:
@@ -337,7 +384,10 @@ def spread_units(activity, description, total_units, start, end):
         "document",
         "process",
         "contract signature",
-        "kom"
+        "kom",
+        "training",
+        "set-up",
+        "setup"
     ]):
         spread[month_key(phase_start)] = total_units
 
@@ -359,10 +409,10 @@ def spread_units(activity, description, total_units, start, end):
 def generate_revenue_tracker(budget_file, template_file):
     activities, activity_sheet, header_row, workload_df = extract_budget_activities(budget_file)
 
-    study_start, study_end, timeline_source = find_timeline_from_workload_sheet(workload_df)
+    project_start, project_end, timeline_source = find_timeline_from_workload_sheet(workload_df)
 
-    if study_start is None or study_end is None:
-        study_start, study_end, timeline_source = find_study_timeline_from_all_sheets(budget_file)
+    if project_start is None or project_end is None:
+        project_start, project_end, timeline_source = find_study_timeline_from_all_sheets(budget_file)
 
     wb = load_workbook(
         template_file,
@@ -375,18 +425,19 @@ def generate_revenue_tracker(budget_file, template_file):
 
     ws = wb["UNIT TRACKER"]
 
-    ws["G5"] = study_start
-    ws["G6"] = study_end
+    ws["G5"] = project_start
+    ws["G6"] = project_end
 
-    study_months = get_months_between(study_start, study_end)
+    project_months = get_months_between(project_start, project_end)
 
     forecast_cols = {}
     start_col = 18  # R
 
-    for i, m in enumerate(study_months):
+    for i, m in enumerate(project_months):
         forecast_cols[month_key(m)] = start_col + (i * 6)
 
     target_row = 40
+    missing_row_timeline_count = 0
 
     for item in activities:
         activity = item["activity"]
@@ -394,8 +445,17 @@ def generate_revenue_tracker(budget_file, template_file):
         units = item["units"]
         unit_price = item["unit_price"]
 
-        ws[f"D{target_row}"] = study_start
-        ws[f"E{target_row}"] = study_end
+        row_start = item["row_start"] or project_start
+        row_end = item["row_end"] or project_end
+
+        if item["row_start"] is None or item["row_end"] is None:
+            missing_row_timeline_count += 1
+
+        if row_end < row_start:
+            row_start, row_end = row_end, row_start
+
+        ws[f"D{target_row}"] = row_start
+        ws[f"E{target_row}"] = row_end
         ws[f"F{target_row}"] = activity
         ws[f"H{target_row}"] = description
         ws[f"I{target_row}"] = units
@@ -405,8 +465,8 @@ def generate_revenue_tracker(budget_file, template_file):
             activity,
             description,
             units,
-            study_start,
-            study_end
+            row_start,
+            row_end
         )
 
         total_forecast_units = 0
@@ -446,14 +506,21 @@ def generate_revenue_tracker(budget_file, template_file):
         if unit_cost in [None, "", 0]:
             validation_warnings.append(f"Row {row}: Missing or zero unit cost")
 
-        if forecast_units and contracted_units and forecast_units > contracted_units:
-            validation_warnings.append(f"Row {row}: Forecast units exceed contracted units")
+        if forecast_units and contracted_units and abs(forecast_units - contracted_units) > 0.01:
+            validation_warnings.append(
+                f"Row {row}: Forecast units do not match contracted units"
+            )
 
         if contracted_units and unit_cost:
             total_contract_value += contracted_units * unit_cost
 
         if forecast_units:
             total_forecast_units += forecast_units
+
+    if missing_row_timeline_count > 0:
+        validation_warnings.append(
+            f"{missing_row_timeline_count} rows had missing activity-level dates and used project-level timeline fallback."
+        )
 
     high_risk = []
     medium_risk = []
@@ -462,15 +529,17 @@ def generate_revenue_tracker(budget_file, template_file):
     for warning in validation_warnings:
         text = warning.lower()
 
-        if "forecast units exceed contracted units" in text:
+        if "missing or zero unit cost" in text:
             high_risk.append(warning)
-        elif "missing or zero unit cost" in text:
-            high_risk.append(warning)
+        elif "forecast units do not match contracted units" in text:
+            medium_risk.append(warning)
         elif "missing activity name" in text:
             medium_risk.append(warning)
         elif "missing unit description" in text:
             medium_risk.append(warning)
         elif "missing or zero contracted units" in text:
+            medium_risk.append(warning)
+        elif "fallback" in text:
             medium_risk.append(warning)
         else:
             low_risk.append(warning)
@@ -488,10 +557,10 @@ def generate_revenue_tracker(budget_file, template_file):
         actions.append("Review revenue-impacting rows immediately.")
 
     if medium_risk:
-        actions.append("Validate missing data and incomplete assumptions.")
+        actions.append("Validate warnings, especially missing row-level timelines.")
 
     if total_forecast_units > 0:
-        actions.append("Confirm forecast spread aligns with study phases.")
+        actions.append("Confirm forecast spread aligns with row-level activity timelines.")
 
     if total_contract_value > 0:
         actions.append("Verify contract totals against budget assumptions.")
@@ -518,18 +587,20 @@ def generate_revenue_tracker(budget_file, template_file):
     review_ws["B9"] = round(total_contract_value, 2)
     review_ws["A10"] = "Total Forecast Units"
     review_ws["B10"] = round(total_forecast_units, 2)
-    review_ws["A11"] = "Activity Source Sheet"
+    review_ws["A11"] = "Budget Activity Source Sheet"
     review_ws["B11"] = activity_sheet
-    review_ws["A12"] = "Timeline Source Sheet"
+    review_ws["A12"] = "Project Timeline Source Sheet"
     review_ws["B12"] = timeline_source["sheet"]
-    review_ws["A13"] = "Timeline Source Row"
+    review_ws["A13"] = "Project Timeline Source Row"
     review_ws["B13"] = timeline_source["row"]
-    review_ws["A14"] = "Detected Study Start"
-    review_ws["B14"] = study_start
-    review_ws["A15"] = "Detected Study End"
-    review_ws["B15"] = study_end
+    review_ws["A14"] = "Detected Project Start"
+    review_ws["B14"] = project_start
+    review_ws["A15"] = "Detected Project End"
+    review_ws["B15"] = project_end
+    review_ws["A16"] = "Rows Missing Activity-Level Timeline"
+    review_ws["B16"] = missing_row_timeline_count
 
-    row_num = 17
+    row_num = 18
 
     review_ws[f"A{row_num}"] = "HIGH-RISK ITEMS"
     row_num += 1
@@ -574,15 +645,20 @@ def generate_revenue_tracker(budget_file, template_file):
         "actions": actions,
         "activity_sheet": activity_sheet,
         "timeline_source": timeline_source,
-        "study_start": study_start,
-        "study_end": study_end
+        "project_start": project_start,
+        "project_end": project_end,
+        "missing_row_timeline_count": missing_row_timeline_count
     }
 
     return output, summary
 
 
 st.sidebar.header("Study Parameters")
-st.sidebar.info("Budget lines are read from 'Workload and Resources P1'. Timeline is detected from that sheet first, then other sheets if missing.")
+st.sidebar.info(
+    "Budget lines are read from 'Workload and Resources P1'. "
+    "Activity-level timelines are taken from start time/end time columns. "
+    "If missing, the project-level timeline is used as fallback."
+)
 
 col1, col2 = st.columns(2)
 
@@ -606,11 +682,15 @@ if st.button("Generate Revenue Module"):
             st.subheader("Detected Sources")
             st.write(f"Budget activity data used from sheet: **{summary['activity_sheet']}**")
             st.write(
-                f"Timeline detected from sheet: **{summary['timeline_source']['sheet']}**, "
+                f"Project timeline detected from sheet: **{summary['timeline_source']['sheet']}**, "
                 f"row **{summary['timeline_source']['row']}**"
             )
-            st.write(f"Detected study start: **{summary['study_start'].strftime('%d-%b-%Y')}**")
-            st.write(f"Detected study end: **{summary['study_end'].strftime('%d-%b-%Y')}**")
+            st.write(f"Detected project start: **{summary['project_start'].strftime('%d-%b-%Y')}**")
+            st.write(f"Detected project end: **{summary['project_end'].strftime('%d-%b-%Y')}**")
+            st.write(
+                f"Rows using project-level fallback timeline: "
+                f"**{summary['missing_row_timeline_count']}**"
+            )
 
             st.subheader("PMO Review Summary")
             st.write(f"Revenue Confidence: **{summary['confidence']}**")
@@ -626,7 +706,7 @@ if st.button("Generate Revenue Module"):
             st.download_button(
                 label="Download Completed Revenue Tracker",
                 data=output,
-                file_name="P95_UNIT_TRACKER_PHASE_BASED.xlsx",
+                file_name="P95_UNIT_TRACKER_ROW_TIMELINES.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
@@ -636,3 +716,6 @@ if st.button("Generate Revenue Module"):
 
 st.divider()
 st.caption("P95 AI Revenue Module Generator • Powered by Dania Alqudah")
+```
+
+Commit and refresh.
