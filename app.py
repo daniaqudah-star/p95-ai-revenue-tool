@@ -362,3 +362,6 @@ if st.button("Generate Revenue Module"):
         except Exception as e:
             st.error("Something went wrong while generating the tracker.")
             st.exception(e)
+            # Footer
+st.divider()
+st.caption("P95 AI Revenue Module Generator • Powered by Dania Alqudah")
