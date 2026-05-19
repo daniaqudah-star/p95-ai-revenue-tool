@@ -73,7 +73,7 @@ def find_study_timeline_from_all_sheets(budget_file):
     return best["start"], best["end"], best
 
 
-def find_budget_activity_sheet(budget_file):
+def def find_budget_activity_sheet(budget_file):
     all_sheets = pd.read_excel(budget_file, sheet_name=None, header=None)
 
     best_sheet = None
@@ -93,13 +93,18 @@ def find_budget_activity_sheet(budget_file):
     ]
 
     for sheet_name, df in all_sheets.items():
-values = [
-    safe_text(x)
-    for x in df.values.flatten().tolist()
-]
-text = " ".join(values).lower()
 
-        score = sum(1 for keyword in keywords if keyword in text)
+        values = [
+            safe_text(x)
+            for x in df.values.flatten().tolist()
+        ]
+
+        text = " ".join(values).lower()
+
+        score = sum(
+            1 for keyword in keywords
+            if keyword in text
+        )
 
         if score > best_score:
             best_score = score
