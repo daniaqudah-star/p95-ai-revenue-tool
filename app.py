@@ -114,8 +114,14 @@ def generate_revenue_tracker(budget_file, template_file):
 
     ws = wb["UNIT TRACKER"]
 
-    study_start = budget_df.iloc[23, 1]
-    study_end = budget_df.iloc[23, 2]
+    study_start = pd.to_datetime(budget_df.iloc[23, 1], errors="coerce")
+study_end = pd.to_datetime(budget_df.iloc[23, 2], errors="coerce")
+
+if pd.isna(study_start) or pd.isna(study_end):
+    raise ValueError("Could not detect valid study start/end dates from the budget file.")
+
+study_start = study_start.to_pydatetime()
+study_end = study_end.to_pydatetime()
 
     ws["G5"] = study_start
     ws["G6"] = study_end
