@@ -71,167 +71,92 @@ def find_study_timeline_from_all_sheets(budget_file):
     return best["start"], best["end"], best
 
 
-def find_budget_activity_sheet(budget_file):
+def extract_budget_activities(budget_file):
     all_sheets = pd.read_excel(budget_file, sheet_name=None, header=None)
-
-    best_sheet = None
-    best_score = 0
-
-    keywords = [
-        "activities",
-        "activity",
-        "units",
-        "unit price",
-        "unit cost",
-        "total price",
-        "total cost",
-        "workload",
-        "resources",
-        "budget",
-        "payment",
-        "milestone"
-    ]
+    activities = []
+    selected_sheet = None
+    selected_header_row = None
 
     for sheet_name, df in all_sheets.items():
-        values = [safe_text(x) for x in df.values.flatten()]
-        text = " ".join(values).lower()
+        for idx in range(len(df)):
+            row = df.iloc[idx]
 
-        score = sum(1 for keyword in keywords if keyword in text)
+            text_values = [safe_text(x) for x in row.tolist()]
+            row_text = " ".join(text_values).lower()
 
-        if score > best_score:
-            best_score = score
-            best_sheet = sheet_name
-
-    if best_sheet is None:
-        raise ValueError("Could not detect budget activity sheet.")
-
-    return best_sheet
-
-
-def detect_header_row(df):
-    keywords = [
-        "activities",
-        "activity",
-        "milestone",
-        "units",
-        "unit price",
-        "unit cost",
-        "total price",
-        "total cost",
-        "direct costs"
-    ]
-
-    for idx in range(min(len(df), 80)):
-        row_values = [safe_text(x).lower() for x in df.iloc[idx].tolist()]
-        row_text = " ".join(row_values)
-
-        matches = sum(1 for keyword in keywords if keyword in row_text)
-
-        if matches >= 2:
-            return idx
-
-    return 0
-
-
-def extract_budget_activities(budget_file):
-    sheet_name = find_budget_activity_sheet(budget_file)
-
-    df = pd.read_excel(
-        budget_file,
-        sheet_name=sheet_name,
-        header=None
-    )
-
-    header_row = detect_header_row(df)
-
-    headers = [
-        safe_text(x).lower()
-        for x in df.iloc[header_row].tolist()
-    ]
-
-    def find_col(possible_names, fallback=None):
-        for name in possible_names:
-            for i, header in enumerate(headers):
-                if name in header:
-                    return i
-        return fallback
-
-    activity_col = find_col(["activities", "activity", "milestone"], 0)
-    description_col = find_col(["description", "unit description", "estimated timeline"], 1)
-    units_col = find_col(["units", "# of units", "months", "timeline"], None)
-    unit_price_col = find_col(["unit price", "unit cost"], None)
-    total_price_col = find_col(["total price", "total cost", "direct costs", "eur"], None)
-
-    activities = []
-
-    for idx in range(header_row + 1, len(df)):
-        row = df.iloc[idx]
-
-        activity = row[activity_col] if activity_col is not None and activity_col < len(row) else None
-        description = row[description_col] if description_col is not None and description_col < len(row) else ""
-        units = row[units_col] if units_col is not None and units_col < len(row) else None
-        unit_price = row[unit_price_col] if unit_price_col is not None and unit_price_col < len(row) else None
-        total_price = row[total_price_col] if total_price_col is not None and total_price_col < len(row) else None
-
-        activity_text = safe_text(activity)
-        description_text = safe_text(description)
-
-        if not activity_text:
-            continue
-
-        lower_text = activity_text.lower()
-
-        skip_terms = [
-            "insert lines",
-            "sectiontotal",
-            "section total",
-            "budget total",
-            "project budget",
-            "assumptions",
-            "timelines",
-            "timeline",
-            "meetings",
-            "rates",
-            "resource",
-            "inflation",
-            "year",
-            "total",
-            "operations total"
-        ]
-
-        if any(term == lower_text or lower_text.startswith(term) for term in skip_terms):
-            continue
-
-        units_numeric = pd.to_numeric(units, errors="coerce")
-        unit_price_numeric = pd.to_numeric(unit_price, errors="coerce")
-        total_numeric = pd.to_numeric(total_price, errors="coerce")
-
-        if pd.isna(units_numeric):
-            units_numeric = 1
-
-        if pd.isna(unit_price_numeric):
-            if not pd.isna(total_numeric) and float(units_numeric) != 0:
-                unit_price_numeric = float(total_numeric) / float(units_numeric)
-            else:
+            if any(x in row_text for x in [
+                "inflation",
+                "weighting",
+                "base rate",
+                "total (%)",
+                "weighted rates",
+                "rate card"
+            ]):
                 continue
 
-        if float(units_numeric) == 0 or float(unit_price_numeric) == 0:
-            continue
+            activity_text = ""
+            for value in text_values:
+                cleaned = value.replace(",", "").replace("€", "").replace("$", "").strip()
 
-        activities.append({
-            "activity": activity_text,
-            "description": description_text,
-            "units": float(units_numeric),
-            "unit_price": float(unit_price_numeric),
-            "total_price": total_numeric,
-            "source_sheet": sheet_name,
-            "source_row": idx + 1
-        })
+                if value and not cleaned.replace(".", "", 1).isdigit():
+                    activity_text = value
+                    break
+
+            if not activity_text:
+                continue
+
+            numeric_values = []
+            for value in row.tolist():
+                number = pd.to_numeric(value, errors="coerce")
+                if not pd.isna(number) and float(number) > 0:
+                    numeric_values.append(float(number))
+
+            if not numeric_values:
+                continue
+
+            total_value = max(numeric_values)
+
+            if total_value < 100:
+                continue
+
+            lower_activity = activity_text.lower()
+
+            skip_terms = [
+                "project budget",
+                "budget summary",
+                "operations total",
+                "direct costs",
+                "yearly direct",
+                "payment",
+                "paid",
+                "total",
+                "year",
+                "estimated timeline",
+                "direct costs (eur)",
+                "milestone",
+                "comments"
+            ]
+
+            if any(term == lower_activity or lower_activity.startswith(term) for term in skip_terms):
+                continue
+
+            activities.append({
+                "activity": activity_text,
+                "description": "Auto-detected from budget",
+                "units": 1.0,
+                "unit_price": total_value,
+                "total_price": total_value,
+                "source_sheet": sheet_name,
+                "source_row": idx + 1
+            })
+
+            selected_sheet = sheet_name
+            selected_header_row = idx + 1
 
     if not activities:
         raise ValueError("Could not detect usable budget activity rows.")
 
-    return activities, sheet_name, header_row + 1
+    return activities, selected_sheet, selected_header_row
 
 
 def get_phase_dates(start, end):
